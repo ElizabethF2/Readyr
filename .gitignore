@@ -1,0 +1,8 @@
+Extensions/
+__pycache__/
+*.pyc
+*.txt
+*.log
+*.pem
+*.db
+*.json

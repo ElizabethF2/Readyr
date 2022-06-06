@@ -1,0 +1,817 @@
+<html>
+  <head>
+    <title>Readyr</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <script>
+      window.MC_EXTENSION_NAME = document.title;
+      const NEW_CATEGORY = '+ New Category';
+
+      var deferred_queue = {};
+      var open_categories = new Set();
+
+      var show_login = function() {
+        html = "<center><br><br>" +
+               "<h1>Login</h1><br>" +
+               "<input type='password' class='tbox' id='passbox'><br>" +
+               "<div class='button' onclick='do_login()'>Login</div><br><br><br><br>" +
+               "<input type='text' class='tbox' id='uidbox'><br>" +
+               "<div class='button' onclick='do_set_uid()'>Set UID</div>" +
+               "</center>";
+        document.querySelector('.container').innerHTML = html;
+      }
+
+      var do_login = function() {
+        var pass = document.querySelector('#passbox').value;
+        call_api('POST', 'login', {'password':pass}, function() {
+          show_start_page();
+        });
+      }
+
+      var do_set_uid = function()
+      {
+        var date = new Date();
+        date.setTime(date.getTime()+(10*365*24*60*60*1000)); // 10 years from now
+        var expires = date.toGMTString();
+        document.cookie = '_sessen_uid='+document.querySelector('#uidbox').value+'; Expires='+expires;
+        show_start_page();
+      }
+
+      var do_logout = function() {
+        call_api('POST', 'logout', null, function() {
+          window.location.reload();
+        });
+      }
+
+      var show_manage_subscriptions = function() {
+        update_sidebar_async(function(subscriptions) {
+          var html = "<h1>Add Subscription</h1>" + 
+                     "Enter your feed's URL:<br>" + 
+                     "<input type='text' class='tbox' id='url'>" +
+                     "<div class='button' onclick='add_subscription()'>Add</div>" +
+                     "<div class='sep'></div>" +
+                     "<h1>Edit Subscriptions</h1><br>";
+          var sorted = sort_subscriptions(subscriptions, false);
+          var categories = new Set();
+          for (sub of sorted) {
+            categories.add(sub['category']);
+          }
+          categories = Array.from(categories).sort();
+          for (sub of sorted) {
+            html += '<span>'+sub.title+'</span> ' +
+                    "<select data-url_hash='"+sub.url_hash+"' onblur='change_category(event)'>";
+            for (c of categories) {
+              var selected = c==sub.category ? 'selected' : '';
+              html += "<option value='" + c + "' " + selected + ">" + c + "</option>";
+            }
+            html += "<option value='" + NEW_CATEGORY + "'>" + NEW_CATEGORY  + "</option>" +
+                    "</select> " +
+                    "<span data-url_hash='"+sub.url_hash+"' " +
+                    "onclick='delete_subscription(event)'>&#x274C;</span><br>";
+          }
+          if (sorted.length < 1) {
+            html += 'You have no subscriptions.' +
+                    'A list of your subscriptions will appear here once you add some.<br>';
+          }
+          var idx = document.cookie.indexOf('_sessen_uid=') + 12;
+          html += "<div class='sep'></div>" +
+                  "<h1>OPML</h1>" +
+                  "<div class='button' onclick='import_opml()'>Import OPML</div>" +
+                  "<div class='button' onclick='export_opml()'>Export OPML</div>" +
+                  "<div class='sep'></div>" +
+                  "<i>UID: " + document.cookie.slice(idx, idx+36).trim() + "</i><br>" +
+                  "<div class='sep'></div>" +
+                  "<div class='button' onclick='do_logout()'>Logout</div>";
+          document.querySelector('.container').innerHTML = html;
+          if (window.current_url_hash) {
+            document.querySelector('.right_pane').scrollTop = 0;
+          }
+          window.current_url_hash = null;
+        });
+      }
+
+      var add_subscription = function() {
+        var url = document.querySelector('#url').value;
+        call_api('POST', 'subscriptions', {'url':url}, function(r){
+          show_manage_subscriptions();
+          alert('Subscription Added!');
+        });
+      }
+
+      var change_category = function(evt) {
+        var url_hash = evt.target.dataset.url_hash;
+        var category = evt.target.value;
+        var old_category = window.cached_subscriptions[url_hash].category;
+        if (category != old_category) {
+          if (category == NEW_CATEGORY) {
+            category = prompt('Enter the name of your new category:');
+          }
+          if (category) {
+            call_api('PUT', 'subscriptions/'+url_hash, {'category': category}, function() {
+              show_manage_subscriptions();
+            });
+          }
+        }
+      }
+
+      var import_opml = function() {
+        document.querySelector('input[type=file]').click();
+      }
+
+      var load_opml = function(evt) {
+        var file = evt.target.files[0];
+        var fr = new FileReader();
+        fr.onload = function(e) {
+            parser = new DOMParser();
+            xmlDoc = parser.parseFromString(e.target.result, 'text/xml');
+            var subcount = 0;
+            var categories = xmlDoc.getElementsByTagName('body')[0].children;
+            for (category of categories) {
+              var c = category.getAttribute('title');
+              for (sub of category.children) {
+                var url = sub.getAttribute('xmlUrl')
+                call_api('POST', 'subscriptions', {'url':url, 'category': c}, function(r){
+                  show_manage_subscriptions();
+                });
+                subcount++;
+                console.log(c, url);
+              }
+            }
+            alert('Categories: ' + categories.length + '\nSubscriptions: ' + subcount + '\n\n' +
+                  'Subscriptions are now importing in the background.\n' +
+                  'This may take a while.');
+        };
+        fr.readAsText(file);
+      }
+      
+      function save_to_file(data, filename, type) {
+        var file = new Blob([data], {type: type});
+        if (window.navigator.msSaveOrOpenBlob) {
+          window.navigator.msSaveOrOpenBlob(file, filename);
+        } else {
+          var a = document.createElement("a"),
+          url = URL.createObjectURL(file);
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(function() {
+              document.body.removeChild(a);
+              window.URL.revokeObjectURL(url);  
+          }, 0); 
+        }
+      }
+
+      var export_opml = function() {
+        var subscriptions_by_category = split_subscriptions_by_category(window.cached_subscriptions);
+        opml = '<?xml version="1.0" encoding="UTF-8"?>\n<opml version="1.0">\n<head>\n' +
+               '  <title>Subscriptions Exported from Readyr</title>\n</head>\n<body>';
+        for (category in subscriptions_by_category) {
+          opml += '\n  <outline text="' + category + '" title="'+category+'">';
+          var subs = subscriptions_by_category[category];
+          for (sub of subs) {
+            opml += '\n    <outline type="rss" text="'+sub.title+'" title="'+sub.title+'" xmlUrl="'+sub.url+'" htmlUrl="'+sub.url+'"/>';
+          }
+          opml += '\n  </outline>'
+        }
+        opml += '\n</body>\n</opml>';
+        save_to_file(opml, 'Readyr.opml', 'text/xml');
+      }
+
+      var sort_subscriptions = function(subscriptions, sort_by_unread_count) {
+        var sorted_subs = [];
+        for (url_hash in subscriptions) {
+          s = subscriptions[url_hash];
+          s['url_hash'] = url_hash;
+          sorted_subs.push(s);
+        }
+        sorted_subs.sort(function(a,b){
+          if (sort_by_unread_count) {
+            var x = (a['unread'] > 0), y = (b['unread'] > 0);
+            if (x != y) {
+              return x ? -1 : 1;
+            }
+          }
+          var x = a['title'].toLowerCase(), y = b['title'].toLowerCase();
+          return ((x < y) ? -1 : ((x > y) ? 1 : 0));
+        });
+        return sorted_subs;
+      }
+
+      var split_subscriptions_by_category = function(subscriptions) {
+        var result = {};
+        var sorted = sort_subscriptions(subscriptions, true);
+        for (sub of sorted) {
+          if (result[sub.category]) {
+            result[sub.category].push(sub);
+          } else {
+            result[sub.category] = [sub];
+          }
+        }
+        return result;
+      }
+
+      var update_sidebar = function(subscriptions) {
+        html = '';
+        var subscriptions_by_category = split_subscriptions_by_category(subscriptions);
+        var categories = Object.keys(subscriptions_by_category);
+        categories.sort();
+        for (category of categories) {
+          var chtml = '';
+          var unread = 0;
+          var subs = subscriptions_by_category[category];
+          for (sub of subs) {
+            chtml += "<div class='subscription' data-url_hash='" + sub.url_hash + 
+                     "' onclick='show_feed(event)'>";
+            if (sub.logo) {
+              chtml += "<img class='logo' src='" + sub.logo + "'/> ";
+            } else {
+              var logo = '';
+              try {
+                if (sub.link && sub.link.indexOf('://') > 0) {
+                  logo = 'https://s2.googleusercontent.com/s2/favicons?domain=' + sub.link;
+                } else {
+                  logo = 'https://s2.googleusercontent.com/s2/favicons?domain=' + sub.url;
+                }
+              } catch(e) {
+                logo = 'https://s2.googleusercontent.com/s2/favicons?domain=' + sub.url;
+              }
+              chtml += "<img class='logo' src='" + logo + "'/> ";
+            }
+            chtml += sub['title'];
+            if (sub['unread'] > 0) {
+              chtml += ' ('+sub['unread']+')';
+              unread += sub['unread'];
+            }
+            chtml += "</div>";
+          }
+          var open = window.open_categories.has(category) ? 'open' : '';
+          html += "<div class='category " + open + "'>" +
+                  "<span class='category_title' onclick='toggle_category(event)' data-name='" + category + "'>" + category;
+          if (unread) {
+            html += ' (' + unread + ')';
+          }
+          html += "</span>" + chtml + "</div>";
+        }
+        document.querySelector('.subscription_list').innerHTML = html;
+      }
+
+      var update_sidebar_async = function(callback) {
+        call_api('GET', 'subscriptions', null, function(subscriptions) {
+          window.cached_subscriptions = subscriptions;
+          update_sidebar(subscriptions);
+          if (callback) {
+            callback(subscriptions);
+          }
+        });
+      }
+      
+      var show_feed = function(evt) {
+        window.current_url_hash = evt.target.dataset.url_hash;
+        window.unread_mode = true;
+        window.newest_to_oldest = true;
+        do_show_feed();
+      }
+      
+      var do_show_feed = function(evt) {
+        var cached_sub = window.cached_subscriptions[window.current_url_hash];
+        if (window.newest_to_oldest)
+        {
+          window.current_page = window.unread_mode ? cached_sub.unread_pages|0 : cached_sub.read_pages|0;
+        }
+        else
+        {
+          window.current_page = 0;
+        }
+        var title = cached_sub.title;
+        var link = cached_sub.link;
+        var html = "<a class='feed_title' href='"+link+"' target='_new' rel='noreferrer'>"+title+"</a><br>";
+        html += "<span class='feint'>";
+        if (window.unread_mode) {
+          html += "Currently showing unread items. " +
+                  "<a href='#' onclick='toggle_unread_mode()'>Switch to Read Items</a>";
+        } else {
+          html += "Currently showing read items. " +
+                  "<a href='#' onclick='toggle_unread_mode()'>Switch to Unread Items</a>";
+        }
+        html += "</span><br>";
+        html += "<span class='feint'>";
+        if (window.newest_to_oldest) {
+          html += "Currently sorting from newest to oldest. " +
+                  "<a href='#' onclick='toggle_sort_order()'>Sort from Oldest to Newest</a>";
+        } else {
+          html += "Currently sorting from oldest to newest. " +
+                  "<a href='#' onclick='toggle_sort_order()'>Sort from Newest to Oldest</a>";
+        }
+        html += "</span><br>";
+        html += "<span class='feint'><a href='#' onclick='refresh_feed()'>Refresh this feed</a></span>";
+        document.querySelector('.container').innerHTML = html;
+        next_page();
+      }
+
+      var toggle_unread_mode = function() {
+        window.unread_mode = !window.unread_mode;
+        do_show_feed();
+      }
+
+      var toggle_sort_order = function() {
+        window.newest_to_oldest = !window.newest_to_oldest;
+        do_show_feed();
+      }
+
+      var toggle_category = function(evt) {
+         var cat = evt.target.parentElement;
+         var name = evt.target.dataset.name;
+         if (cat.classList.contains('open')) {
+           cat.classList.remove('open');
+           window.open_categories.delete(name);
+         } else {
+           cat.classList.add('open');
+           window.open_categories.add(name);
+         }
+      }
+
+      var fix_linebreaks = function(htm) {
+        return htm
+               .replace(/[\r\n][\r\n\s]+/g, '\n')
+               .replace(/[\r\n]<br\/?>/g, '\n')
+               .replace(/<br\/?>[\r\n]/g, '\n');
+      }
+
+      var next_page = function() {
+        if (!window.page_load_in_progress) {
+          var url_hash = window.current_url_hash;
+          var page = window.current_page;
+          var mode = window.unread_mode ? 'unread' : 'read';
+          var read_items = window.cached_subscriptions[url_hash].read|0;
+          var unread_items = window.cached_subscriptions[url_hash].unread|0;
+          var total_items = read_items + unread_items;
+          if (page != -1 && total_items > 0) {
+            window.page_load_in_progress = true;
+            call_api('GET', 'subscriptions/'+url_hash+'/'+mode+'/'+page, null, function(response) {
+              html = '';
+              if (window.newest_to_oldest)
+              {
+                response.result.items.reverse();
+                if (response.result.previous_page !== undefined)
+                {
+                  window.current_page = response.result.previous_page;
+                }
+                else
+                {
+                  window.current_page--;
+                }
+              }
+              else
+              {
+                if (response.result.next_page !== undefined)
+                {
+                  window.current_page = response.result.next_page;
+                }
+                else
+                {
+                  window.current_page++;
+                }
+              }
+              for (item of response.result.items) {
+                var c = item.read ? 'item read' : 'item';
+                var pubdate = new Date(item.pubdate * 1000);
+                pubdate = pubdate.toDateString() + '   ' + pubdate.toLocaleTimeString();
+                html += "<div class='"+c+"' data-guid='"+item.guid+"' onclick='mark_read(event)'>" +
+                        "<a class='item_title' href='" + item.link + "' target='_new' rel='noreferrer'>" + item.title + "</a>" +
+                        "<a class='mark_unread_link' href='#' onclick='mark_unread(event)'>keep unread</a> " +
+                        "<span class='pubdate'>" + pubdate + "</span><br><br>" +
+                        "<span class='item_content'>" + fix_linebreaks(item.description) + "</span>" +
+                        "</div>";
+              }
+
+              var container = document.querySelector('.container');
+              container.innerHTML += html;
+              var current_subscription = window.cached_subscriptions[window.current_url_hash];
+              if (window.current_page > current_subscription.pages) {
+                window.current_page = -1;
+              }
+              window.page_load_in_progress = false;
+
+              var right_pane = document.querySelector('.right_pane');
+              if ((container.clientHeight < right_pane.clientHeight) && ((window.unread_mode ? current_subscription.unread : current_subscription.read) > 0)) {
+                next_page();
+              }
+            });
+          }
+        }
+      }
+
+      var update_item_read_status = function(guid, read) {
+        window.deferred_queue[guid] = {'read': read};
+        if (!window.deferred_queue_processing_in_progress) {
+          process_deferred_queue();
+        } else if (Object.keys(window.deferred_queue).length == 1) {
+          setTimeout(process_deferred_queue, 2000);
+        }
+      }
+
+      var mark_read = function(evt) {
+        var elem = evt.target.closest('.item');
+        var read = elem.classList.contains('read');
+        if (window.unread_mode && !read) {
+          elem.classList.add('read');
+          update_item_read_status(elem.dataset.guid, true);
+        }
+        evt.stopPropagation();
+      }
+
+      var mark_unread = function(evt) {
+        var elem = evt.target.closest('.item');
+        var read = elem.classList.contains('read');
+        if (read) {
+          elem.classList.remove('read');
+          update_item_read_status(elem.dataset.guid, false);
+        }
+        evt.stopPropagation();
+      }
+
+      var process_deferred_queue = function() {
+        var local_queue = window.deferred_queue;
+        window.deferred_queue = {};
+
+        if (Object.keys(local_queue).length > 0) {
+          window.deferred_queue_processing_in_progress = true;
+          call_api('PUT', 'items', local_queue, function(){
+            update_sidebar_async();
+            window.deferred_queue_processing_in_progress = false;
+          });
+        }
+      }
+
+      var delete_subscription = function(evt) {
+        var url_hash = evt.target.dataset.url_hash;
+        var title = window.cached_subscriptions[url_hash].title;
+        if (confirm('Are you sure you want to unsubscribe from '+title+'?')) {
+          call_api('DELETE', 'subscriptions/'+url_hash, null, function(r) {
+            show_manage_subscriptions();
+            alert('Subscription Removed!');
+          });
+        }
+      }
+
+      var refresh_feed = function() {
+        const REFRESH_MSG = '<h3>Refreshing, please wait...</h3>'
+        var container = document.querySelector('.container');
+        container.innerHTML = REFRESH_MSG;
+        call_api('POST', 'refresh_subscription/'+window.current_url_hash, null, function(r) {
+          update_sidebar_async();
+          if (container.innerHTML == REFRESH_MSG)
+          {
+            do_show_feed();
+          }
+        });
+      }
+
+      var call_api = function(method, URL, requestBody, callback){
+        if (!window.MISSIONCONTROL_USE_PROXY && window.location.href.slice(-1) != '/')
+        {
+          URL = window.location.pathname + '/' + URL;
+        }
+
+        var xhr = window.MISSIONCONTROL_USE_PROXY ? new MCXHRProxy() : new XMLHttpRequest();
+        xhr.open(method, URL);
+
+        xhr.onreadystatechange = function(){
+          if(xhr.readyState == 4){
+            var res;
+            try {
+              res = JSON.parse(xhr.responseText);
+            } catch(e) {
+              res = xhr.responseText;
+            }
+
+            if (res.error){
+              if (res.error == 'Unauthenticated') {
+                show_login();
+              } else {
+                alert('Error: '+res.error);
+              }
+            } else if(callback){
+              callback(res);
+            }
+          }
+        }
+
+        if(requestBody){
+          xhr.setRequestHeader('Content-Type', 'application/json;charset=UTF-8');
+          xhr.send(JSON.stringify(requestBody));
+        } else {
+          xhr.send();
+        }
+      };
+
+      var go_item = function(direction) {
+        var pane = document.querySelector('.right_pane');
+        var items = document.querySelectorAll('.item');
+        var current = pane.scrollTop;
+        if (!items) {
+          return;
+        }
+        if (direction == 'previous') {
+          items = Array.prototype.slice.call(items, 0);
+          items.reverse();
+        }
+        for (item of items) {
+          var ydiff = item.getBoundingClientRect().top;
+          if ((direction == 'next' && ydiff > 1) ||
+              (direction == 'previous' && ydiff < -1)) {
+            pane.scrollTop = current + ydiff;
+            mark_read({'target':item, 'stopPropagation': function(){}})
+            return;
+          }
+        }
+      }
+
+      var get_current_item = function() {
+        var items = document.querySelectorAll('.item');
+        if (items) {
+          for (item of items) {
+            var ydiff = item.getBoundingClientRect().top;
+            if (Math.abs(ydiff) < 1) {
+              return item;
+            }
+          }
+        }
+      }
+      
+      var mark_current_item_unread = function() {
+        var item = get_current_item();
+        if (item) {
+          mark_unread({'target':item});
+        }
+      }
+
+      var open_link_from_current_item = function() {
+        var item = get_current_item();
+        if (item) {
+          var url = item.querySelector('.item_title').href;
+          window.open(url);
+        }
+      }
+
+      window.onkeydown = function(evt) {
+        switch(evt.key)
+        {
+          case 'j':
+            go_item('next');
+            break;
+          case 'k':
+            go_item('previous');
+            break;
+          case 'u':
+            mark_current_item_unread();
+            break;
+          case 'v':
+            open_link_from_current_item();
+            break;
+        }
+      }
+      
+      var scroll_handler = function(evt) {
+        var t = evt.target;
+        if (t.scrollTop + t.clientHeight > 0.7 * t.scrollHeight) {
+          next_page();
+        }
+      }
+
+      var show_start_page = function() {
+        update_sidebar_async(function(subscriptions){
+          html = '<center><h3>';
+          if (Object.keys(subscriptions).length < 1) {
+            html += 'Click the gear in the upper left corner to get started!';
+          } else {
+            html += 'Select a feed from the pane on the left or click the gear in the upper left to manage your feeds.';
+          }
+          html += '</h3></center>';
+          document.querySelector('.container').innerHTML = html;
+        });
+      }
+
+      window.onload = function()
+      {
+        show_start_page();
+        var pane = document.querySelector('.right_pane');
+        pane.onscroll = scroll_handler;
+      }
+    </script>
+    <style>
+      .pane
+      {
+        height: 100%;
+        top: 0;
+        position: fixed;
+        margin: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+
+      .left_pane
+      {
+        width: 15%;
+        left: 0;
+        background-color: #148759;
+      }
+      
+      .right_pane
+      {
+        width: 85%;
+        right: 0;
+      }
+      
+      .category
+      {
+        background-color: #4f9b64;
+        padding: 5px;
+        margin: 5px;
+      }
+
+      .category_title
+      {
+        display: block;
+        color: white;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+      
+      .subscription
+      {
+        display: None;
+        color: white;
+        height: auto;
+        width: 90%;
+        padding:10px;
+        margin: 5px;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+      }
+      
+      .logo
+      {
+        max-height: 16px;
+        max-width: 16px;
+        margin: 0px 3px;
+      }
+
+      .open > .subscription
+      {
+        display: Block;
+      }
+
+      .subscription:hover
+      {
+        background-color: rgba(200,200,200,.5);
+      }
+      
+      .button
+      {
+        display: inline-block;
+        color: white;
+        background-color: #01601f;
+        border-radius: 15px;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 22px;
+        margin: 5px;
+        margin-top: 10px;
+        margin-left: 5px;
+        padding: 5px 10px;
+      }
+      
+      .button:hover
+      {
+        background-color: #022b0f;
+      }
+      
+      .little_button
+      {
+        display: inline-block;
+        font-size: 24px;
+        margin: 5px;
+        margin-right: 15px;
+        color: white;
+      }
+      
+      .little_button:hover
+      {
+        color: #555;
+      }
+      
+      .container
+      {
+        margin: 10px;
+        font-family: Arial, Helvetica, sans-serif;
+        vertical-align: center;
+      }
+      
+      .tbox
+      {
+        height:55px;
+        font-size:24pt;
+        width: 75%;
+      }
+      
+      .sep
+      {
+        display: block;
+        background-color: #777;
+        width: 90%;
+        height: 1px;
+        margin: 20px;
+      }
+      
+      .feint
+      {
+        display: inline-block;
+        color: #333;
+        font-size: 8pt;
+        font-style: oblique;
+      }
+      
+      .feed_title
+      {
+        display: inline-block;
+        font-size: 28pt;
+        font-style: bold;
+      }
+      
+      .item
+      {
+        display: block;
+        border-style: solid;
+        border-width: 2px;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 50px;
+      }
+      
+      .read
+      {
+        border-color: #CCC;
+      }
+      
+      .mark_unread_link
+      {
+        display: None;
+      }
+
+      .read .mark_unread_link
+      {
+        display: inline-block;
+        color: #BBB;
+        font-size: 12pt;
+        margin-left: 20px;
+      }
+
+      .pubdate
+      {
+        color: #BBB;
+        font-size: 9pt;
+        margin-left: 20px;
+      }
+
+      .item_content
+      {
+        white-space: pre-wrap;
+      }
+      
+      .item_content p
+      {
+        margin: 0px;
+      }
+      
+      .item_content img
+      {
+        display: block;
+        max-width: 80%;
+        height: auto;
+        width: auto;
+        margin: 5px;
+        border: None;
+      }
+
+      .item_title
+      {
+        display: block;
+        font-size: 18pt;
+        margin: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <input type='file' accept='.opml' style='display:none' onchange='load_opml(event)'/>
+    <div class='pane left_pane'>
+      <div class='little_button' onclick="show_manage_subscriptions()">&#9881;</div>
+      <div class='little_button' onclick="go_item('previous')">&#9650;</div>
+      <div class='little_button' onclick="go_item('next')">&#9660;</div>
+      <div class='subscription_list'>
+      </div>
+    </div>
+    
+    <div class='pane right_pane'>
+      <div class='container'></div>
+    </div>
+  </body>
+</html>
