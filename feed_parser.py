@@ -6,11 +6,11 @@ import re, mimetypes
 
 def _get_raw_title(xml):
   try:
-    return re.search('(?is)<\s*title.*?>(.+?)</\s*title\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*title.*?>(.+?)</\s*title\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   try:
-    return re.search('(?is)<\s*media:title.*?>(.+?)</\s*media:title\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*media:title.*?>(.+?)</\s*media:title\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   return 'No Title'
@@ -23,11 +23,11 @@ def _get_title(xml):
 
 def _get_link(xml):
   try:
-    return re.search('(?is)<\s*link\s*>(.*?)</\s*link\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*link\s*>(.*?)</\s*link\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
-  xml = re.sub('(?is)<\s*link.+?rel\s*=\s*.self.+?>', '', xml)
-  s = re.search('(?is)<\s*link.+?href\s*=\s*("(.+?)"|\'(.+?)\')', xml)
+  xml = re.sub(r'(?is)<\s*link.+?rel\s*=\s*.self.+?>', '', xml)
+  s = re.search(r'(?is)<\s*link.+?href\s*=\s*("(.+?)"|\'(.+?)\')', xml)
   try:
     return s.group(2) or s.group(3)
   except (AttributeError, IndexError):
@@ -36,19 +36,19 @@ def _get_link(xml):
 
 def _get_raw_description(xml):
   try:
-    return re.search('(?is)<\s*content:encoded.*?>(.*?)</\s*content:encoded\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*content:encoded.*?>(.*?)</\s*content:encoded\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   try:
-    return re.search('(?is)<\s*media:description.*?>(.*?)</\s*media:description\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*media:description.*?>(.*?)</\s*media:description\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   try:
-    return re.search('(?is)<\s*description\s*>(.*?)</\s*description\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*description\s*>(.*?)</\s*description\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   try:
-    return re.search('(?is)<\s*content\s.*?>(.*?)</\s*content\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*content\s.*?>(.*?)</\s*content\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   return ''
@@ -57,11 +57,11 @@ def _get_description_with_extensions(xml):
   description = _get_raw_description(xml)
   if description.startswith('<![CDATA[') and description.endswith(']]>'):
     description = description[9:-3]
-  s = re.search('(?is)<\s*enclosure\s.*?url\s*=\s*("(.+?)"|\'(.+?)\')', xml)
+  s = re.search(r'(?is)<\s*enclosure\s.*?url\s*=\s*("(.+?)"|\'(.+?)\')', xml)
   try:
     url = s.group(2) or s.group(3)
     type2tag = {'image': 'img', 'audio': 'audio', 'video': 'video'}
-    s = re.search('(?is)<\s*enclosure\s.*?type\s*=\s*["\'](.+?)/', xml)
+    s = re.search(r'(?is)<\s*enclosure\s.*?type\s*=\s*["\'](.+?)/', xml)
     try:
       tag = type2tag[s.group(1)]
     except (AttributeError, IndexError, KeyError):
@@ -72,7 +72,7 @@ def _get_description_with_extensions(xml):
     description = '<'+tag+' controls src="'+url+'" /><br><br>' + description
   except (AttributeError, IndexError):
     pass
-  s = re.search('(?is)<\s*media:thumbnail.+?url\s*=\s*"(.+?)"', xml)
+  s = re.search(r'(?is)<\s*media:thumbnail.+?url\s*=\s*"(.+?)"', xml)
   try:
     url = s.group(1)
     description = '<img src="'+url+'" /><br><br>' + description
@@ -82,11 +82,11 @@ def _get_description_with_extensions(xml):
 
 def _get_guid(xml):
   try:
-    return re.search('(?is)<\s*guid\s*>(.*?)</\s*guid\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*guid\s*>(.*?)</\s*guid\s*>', xml).group(1)
   except (AttributeError, IndexError):
     pass
   try:
-    return re.search('(?is)<\s*id\s*>(.*?)</\s*id\s*>', xml).group(1)
+    return re.search(r'(?is)<\s*id\s*>(.*?)</\s*id\s*>', xml).group(1)
   except (AttributeError, IndexError):
     return None
 
@@ -95,9 +95,9 @@ def parse(xml):
     xml = xml.decode()
   except AttributeError:
     pass
-  items = re.findall('(?is)<\s*item.*?>.*?</\s*item\s*>', xml)
-  items.extend(re.findall('(?is)<\s*entry.*?>.*?</\s*entry\s*>', xml))
-  header_xml = re.sub('(?is)<\s*image.+?</\s*image.*?>', '', xml)
+  items = re.findall(r'(?is)<\s*item.*?>.*?</\s*item\s*>', xml)
+  items.extend(re.findall(r'(?is)<\s*entry.*?>.*?</\s*entry\s*>', xml))
+  header_xml = re.sub(r'(?is)<\s*image.+?</\s*image.*?>', '', xml)
   for item in items:
     header_xml = header_xml.replace(item, '')
   title = _get_title(header_xml)
@@ -109,11 +109,11 @@ def parse(xml):
     description = _get_description_with_extensions(item)
     guid = _get_guid(item) or link
     i = {'title': title, 'link': link, 'description': description, 'guid': guid}
-    s = re.search('(?is)<\s*pubdate\s*>(.*?)</\s*pubdate\s*>', item)
+    s = re.search(r'(?is)<\s*pubdate\s*>(.*?)</\s*pubdate\s*>', item)
     try:
       i['pubdate'] = s.group(1)
     except (AttributeError, IndexError):
-      s = re.search('(?is)<\s*updated\s*>(.*?)</\s*updated\s*>', item)
+      s = re.search(r'(?is)<\s*updated\s*>(.*?)</\s*updated\s*>', item)
       try:
         i['updated'] = s.group(1)
       except (AttributeError, IndexError):

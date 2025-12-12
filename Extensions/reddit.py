@@ -1,4 +1,4 @@
-import sessen, urllib.parse, re, time, json, datetime
+import sessen, os, urllib.parse, re, time, json, datetime
 
 MAX_CACHE_SIZE = 3000
 IMG_EXTS = ['jpg', 'jpeg', 'gif', 'png', 'webp']
@@ -11,7 +11,7 @@ try:
 except FileNotFoundError:
   config = {}
 
-def get_media_htm(child):
+def get_media_htm(child, max_img_width):
   img_src = None
   url = child['data']['url']
   if any((url.lower().endswith('.'+e) for e in IMG_EXTS)):
@@ -25,13 +25,22 @@ def get_media_htm(child):
     if len(ps) > 1 and ps[1] != 'a':
       img_src = 'https://i.imgur.com/'+ps[1]+'.png'
 
-  if img_src:
+  if img_src and max_img_width:
+    return '<img src="'+img_src+'" style="max-width: ' + max_img_width + ';">'
+  elif img_src:
     return '<img src="'+img_src+'" style="max-height: 80vh;">'
 
 _spam_detector = None
 
-def _web_request(method, url, headers, data=None, ssl_verify=True):
-  return sessen.webrequest(method, url, headers=headers, data=data, ssl_verify=ssl_verify, timeout=_spam_detector.DOWNLOAD_TIMEOUT).data
+def _web_request(method, url, headers, data = None, ssl_verify = True):
+  return sessen.webrequest(
+    method,
+    url,
+    headers = headers,
+    data = data,
+    ssl_verify = ssl_verify,
+    timeout = _spam_detector.DOWNLOAD_TIMEOUT,
+  ).data
 
 def _dprint(*msgs):
   sessen.ExtensionProxy('console').print(*map(str, msgs))
@@ -73,12 +82,22 @@ def is_spam(child):
   if child['data']['removed_by_category']:
     return True
 
-  if 'spam_detector_lib' in config:
-    if _spam_detector is None:
-      detector = sessen.load_subextension(config['spam_detector_lib'])
+  if _spam_detector is None:
+    if detector := config.get('spam_detector_lib'):
+      detector = sessen.load_subextension(os.path.abspath(detector))
       detector.web_request = _web_request
       detector.dprint = _dprint
+      detector.SERIALIZE_USER_CACHE = config.get('serialize_user_cache', True)
+      detector.SERIALIZED_USER_CACHE_PATH = config.get(
+        'serialized_user_cache_path', 'spam_detector_user_cache.json'
+      )
+      detector.MAX_SERIALIZED_USER_CACHE = int(
+        config.get('max_serialized_user_cache',
+                   detector.MAX_SERIALIZED_USER_CACHE)
+      )
       _spam_detector = detector
+      return _spam_detector.check_post(post)
+  else:
     return _spam_detector.check_post(post)
 
   return False
@@ -105,6 +124,8 @@ class Feed(object):
       url = url[:-1]
 
     api_url = url.replace('search/?', 'search.json?')
+    if len(api_url.split('/')) == 5:
+      api_url += '/hot'
     if '.json' not in api_url:
       if '?' in api_url:
         api_url = api_url.replace('?', '.json?')
@@ -125,7 +146,7 @@ class Feed(object):
 
     delay = 0
     if 'delay' in args:
-      res = re.search('((?P<days>\d+)[D|d])?.*?((?P<hours>\d+)[H|h])?', args['delay'][0])
+      res = re.search(r'((?P<days>\d+)[D|d])?.*?((?P<hours>\d+)[H|h])?', args['delay'][0])
       delay += int(res.group('days') or 0) * 24 * 60 * 60
       delay += int(res.group('hours') or 0) * 60 * 60
 
@@ -164,6 +185,10 @@ class Feed(object):
       return feed
 
     # Add children to feed
+    max_img_width = args['max_img_width'][0] if 'max_img_width' in args else None
+
+    
+
     for child in reversed(js['data']['children']):
       post = child['data']
       title = child['data']['title']
@@ -196,12 +221,16 @@ class Feed(object):
       if 'selftext_html' in child['data'] and child['data']['selftext_html']:
         description.append(child['data']['selftext_html'])
 
-      media_htm = get_media_htm(child)
+      media_htm = get_media_htm(child, max_img_width)
       thumbnail = child['data']['thumbnail']
       if media_htm:
         description.append(media_htm)
       elif thumbnail not in ('self', 'default', 'nsfw', 'spoiler', '', None):
         description.append('<img src="'+thumbnail+'">')
+      elif thumbnail == 'nsfw':
+        description.append('<br>[NSFW thumbnail hidden]')
+      elif thumbnail == 'spoiler':
+        description.append('<br>[spoiler thumbnail hidden]')
 
       flair = child['data']['link_flair_text']
       if flair:

@@ -4,6 +4,7 @@ import feed_parser, html_sanitizer
 
 MAX_ITEMS_PER_PAGE = 100
 NUMBER_OF_FAILED_UPDATES_TO_LOG_AT = 3
+DELAY_BETWEEN_FEED_UPDATES = 80*60
 
 app_html = sessen.get_file('app.htm')
 config = json.loads(sessen.get_file('config.json'))
@@ -72,6 +73,11 @@ def update_feed_items(subscription, feed):
     subscription_rowid = subscription['rowid']
     items.append((guid, item['title'], link, description, pubdate, read, subscription_rowid))
   def f(db):
+    res = db.execute('SELECT * FROM subscriptions WHERE ROWID=(?) and url=(?)', (subscription['rowid'], subscription['url'])).fetchone()
+    if not res:
+      # The feed was deleted between when the update was requested and when it completed
+      # Ignore the the new items
+      return
     for item in items:
       db.execute('INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?,?)', item)
     db.commit()
@@ -96,24 +102,49 @@ def update_feed(subscription):
       except:
         logger.error('Failed to update feed ' + str(count) + ' time(s) - ' + subscription['url'] + ' - ' + repr(ex))
 
+def get_current_isp():
+  import random, re
+  url, pattern = random.choice((
+    # ('https://www.whatismyisp.com', r'(?s)Your ISP is.+?>(.?)<'),
+    ('https://www.spyber.com', r'(?s)My ISP\s*:\s*.+?>(.+?)<'),
+    ('http://ip-api.com/json', r'(?s)"isp"\s*:\s*"(.+?)"'),
+  ))
+  req = requests.get(url)
+  r = sessen.webrequest('GET', url)
+  return re.findall(pattern, r.text())[0].strip()
+
 def update_feeds():
   def f(db):
-    cur = db.execute('SELECT ROWID,* FROM subscriptions')
+    cur = db.execute('SELECT ROWID,* FROM subscriptions ORDER BY RANDOM()')
     return cur.fetchall()
   for subscription in map(make_subscription_dict, database.run(f)):
     time.sleep(30)
     update_feed(subscription)
 
 def update_feeds_worker():
-  if 'Microsoft' in sessen.webrequest('GET', 'http://www.spyber.com').text():
-    logger.info('HACK HACK HACK Stopping update_feeds_worker')
-    return
+  blocklisted_isps = config.get('blocklisted_isps')
+  if blocklisted_isps:
+    isp = get_current_isp()
+    if any((i in isp for i in blocklisted_isps)):
+      return
+
+  def f(db):
+    res = db.execute('SELECT pubdate FROM items ORDER BY pubdate DESC LIMIT 1').fetchone()
+    return res[0] if res else 0
+  last_update = database.run(f)
+  next_delay = (DELAY_BETWEEN_FEED_UPDATES -
+                min(DELAY_BETWEEN_FEED_UPDATES, time.time() - last_update))
 
   while True:
-    time.sleep(80*60)
+    if next_delay > 0:
+      try:
+        sessen.ExtensionProxy('timer').schedule_once(sessen.get_name(),
+                                                     next_delay)
+        return
+      except PermissionError:
+        time.sleep(next_delay)
+    next_delay = DELAY_BETWEEN_FEED_UPDATES
     update_feeds()
-
-threading.Thread(target=update_feeds_worker, daemon=True).start()
 
 @sessen.bind('GET', '/?$')
 def main_page(connection):
@@ -230,11 +261,11 @@ def get_page(connection, read):
     connection.send_json({'error': 'Invalid feed'})
 
 sessen.bind('GET',
-            '/subscriptions/(?P<url_hash>.+?)/read/(?P<page_num>\d+)$',
+            r'/subscriptions/(?P<url_hash>.+?)/read/(?P<page_num>\d+)$',
             lambda connection: get_page(connection, True))
 
 sessen.bind('GET',
-            '/subscriptions/(?P<url_hash>.+?)/unread/(?P<page_num>\d+)$',
+            r'/subscriptions/(?P<url_hash>.+?)/unread/(?P<page_num>\d+)$',
             lambda connection: get_page(connection, False))
 
 @sessen.bind('PUT', '/items$')
@@ -294,3 +325,8 @@ def login(connection):
 def logout(connection):
   persistent.delete_all(connection)
   connection.send_json({'error':None})
+
+feed_worker_thread = threading.Thread(target = update_feeds_worker)
+feed_worker_thread.start()
+feed_worker_thread.join()
+sessen.trigger_exit_when_idle()
