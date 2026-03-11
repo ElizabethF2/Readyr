@@ -187,8 +187,6 @@ class Feed(object):
     # Add children to feed
     max_img_width = args['max_img_width'][0] if 'max_img_width' in args else None
 
-    
-
     for child in reversed(js['data']['children']):
       post = child['data']
       title = child['data']['title']
