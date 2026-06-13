@@ -1,4 +1,5 @@
-import sessen, os, urllib.parse, re, time, json, datetime
+import sessen, os, urllib.parse, re, time, json, datetime, html
+import feed_parser
 
 MAX_CACHE_SIZE = 3000
 IMG_EXTS = ['jpg', 'jpeg', 'gif', 'png', 'webp']
@@ -123,17 +124,18 @@ class Feed(object):
     if url.endswith('/'):
       url = url[:-1]
 
-    api_url = url.replace('search/?', 'search.json?')
+    api_url = url.replace('search/?', 'search.rss?')
     if len(api_url.split('/')) == 5:
       api_url += '/hot'
-    if '.json' not in api_url:
+    if '.rss' not in api_url:
       if '?' in api_url:
-        api_url = api_url.replace('?', '.json?')
+        api_url = api_url.replace('?', '.rss?')
       else:
-        api_url = api_url + '.json'
+        api_url = api_url + '.rss'
 
     # Query the api
-    js = sessen.webrequest('GET', api_url).json()
+    rss = sessen.webrequest('GET', api_url).text()
+    rss = feed_parser.parse(rss)
 
     # Setup args
     has_max_score = 'max_score' in args
@@ -174,72 +176,79 @@ class Feed(object):
     feed = {'title': title, 'link': url, 'items': []}
 
     # Handle subs that have gone (hopefully temporarily) private
-    if js.get('error') == 403 and js.get('reason') == 'private':
-      now = datetime.datetime.now()
-      feed['items'].append({
-        'title': 'Feed has gone private!',
-        'link': url,
-        'guid': 'private:'+str((now.year, now.month))+':'+url,
-        'description': 'This item was automatically generated.'
-      })
-      return feed
+    # if js.get('error') == 403 and js.get('reason') == 'private':
+    #   now = datetime.datetime.now()
+    #   feed['items'].append({
+    #     'title': 'Feed has gone private!',
+    #     'link': url,
+    #     'guid': 'private:'+str((now.year, now.month))+':'+url,
+    #     'description': 'This item was automatically generated.'
+    #   })
+    #   return feed
 
     # Add children to feed
     max_img_width = args['max_img_width'][0] if 'max_img_width' in args else None
 
-    for child in reversed(js['data']['children']):
-      post = child['data']
-      title = child['data']['title']
-      author = post['author']
-      id = post['id']
+    for post in reversed(rss['items']):
+      title = post['title']
+      # author = post['author']
+      id = post['guid'].split('_')[-1]
 
-      if has_max_score and child['data']['score'] > max_score:
-        continue
+      # if has_max_score and child['data']['score'] > max_score:
+      #   continue
 
-      if has_min_score and child['data']['score'] < min_score:
-        continue
+      # if has_min_score and child['data']['score'] < min_score:
+      #   continue
 
       if any((e in title for e in exclude)):
         continue
 
-      if (time.time() - child['data']['created_utc']) < delay:
-        if id not in _AUTHOR_CACHE:
-          _AUTHOR_CACHE[id] = author
-        continue
+      # if (time.time() - child['data']['created_utc']) < delay:
+      #   if id not in _AUTHOR_CACHE:
+      #     _AUTHOR_CACHE[id] = author
+      #   continue
 
-      if is_spam(child):
-        continue
+      # if is_spam(child):
+      #   continue
 
       try:
         author = _AUTHOR_CACHE.pop(id)
       except KeyError:
         pass
 
-      description = ['By <a href="https://reddit.com/u/'+author+'">u/'+author+'</a>']
-      if 'selftext_html' in child['data'] and child['data']['selftext_html']:
-        description.append(child['data']['selftext_html'])
+      description = html.unescape(html.unescape(post['description']))
+      if img_src := re.search('img src="(.+?)"', description):
+        img_src = img_src.group(1)
+        r = f'<a href="[^"]+{id}[^"]+".+?{re.escape(img_src)}.+?</a>'
+        if description.count(img_src) > 1 and (m := re.search(r, description)):
+          sp = m.span(0)
+          description = description[:sp[0]] + description[sp[1]:]
 
-      media_htm = get_media_htm(child, max_img_width)
-      thumbnail = child['data']['thumbnail']
-      if media_htm:
-        description.append(media_htm)
-      elif thumbnail not in ('self', 'default', 'nsfw', 'spoiler', '', None):
-        description.append('<img src="'+thumbnail+'">')
-      elif thumbnail == 'nsfw':
-        description.append('<br>[NSFW thumbnail hidden]')
-      elif thumbnail == 'spoiler':
-        description.append('<br>[spoiler thumbnail hidden]')
+      # description = ['By <a href="https://reddit.com/u/'+author+'">u/'+author+'</a>']
+      # if 'selftext_html' in child['data'] and child['data']['selftext_html']:
+      #   description.append(child['data']['selftext_html'])
 
-      flair = child['data']['link_flair_text']
-      if flair:
-        title = '[' + flair + '] ' + title
+      # media_htm = get_media_htm(child, max_img_width)
+      # thumbnail = child['data']['thumbnail']
+      # if media_htm:
+      #   description.append(media_htm)
+      # elif thumbnail not in ('self', 'default', 'nsfw', 'spoiler', '', None):
+      #   description.append('<img src="'+thumbnail+'">')
+      # elif thumbnail == 'nsfw':
+      #   description.append('<br>[NSFW thumbnail hidden]')
+      # elif thumbnail == 'spoiler':
+      #   description.append('<br>[spoiler thumbnail hidden]')
+
+      # flair = child['data']['link_flair_text']
+      # if flair:
+      #   title = '[' + flair + '] ' + title
 
       feed['items'].append({
         'title': title,
-        'link': 'https://redd.it/'+child['data']['id'],
-        'guid': child['data']['id'],
-        'description': '<br><br>'.join(description),
-        'pubdate': child['data']['created_utc'],
+        'link': 'https://redd.it/'+id,
+        'guid': id,
+        'description': description,
+        'pubdate': post['updated'],
       })
 
     return feed
