@@ -211,22 +211,20 @@ class Feed(object):
       # if is_spam(child):
       #   continue
 
+      description = html.unescape(html.unescape(post['description']))
+
       try:
         author = _AUTHOR_CACHE.pop(id)
       except KeyError:
-        pass
+        author = re.findall('/user/([^"]+)', description)[-1]
 
-      description = html.unescape(html.unescape(post['description']))
-      if img_src := re.search('img src="(.+?)"', description):
-        img_src = img_src.group(1)
-        r = f'<a href="[^"]+{id}[^"]+".+?{re.escape(img_src)}.+?</a>'
-        if description.count(img_src) > 1 and (m := re.search(r, description)):
-          sp = m.span(0)
-          description = description[:sp[0]] + description[sp[1]:]
-
-      # description = ['By <a href="https://reddit.com/u/'+author+'">u/'+author+'</a>']
-      # if 'selftext_html' in child['data'] and child['data']['selftext_html']:
-      #   description.append(child['data']['selftext_html'])
+      img_src = re.search('img src="(.+?)"', description)
+      description = ['By <a href="https://reddit.com/u/'+author+'">u/'+author+'</a>']
+      pattern = '<!-- SC_OFF --><div.+?>(.+)</div><!-- SC_ON -->'
+      if selftext := re.search(pattern, description):
+        description.append(selftext.group(1))
+      if img_src:
+        description.append('<img src="' + img_src.group(1) + '">')
 
       # media_htm = get_media_htm(child, max_img_width)
       # thumbnail = child['data']['thumbnail']
