@@ -219,9 +219,10 @@ class Feed(object):
         author = re.findall('/user/([^"]+)', description)[-1]
 
       img_src = re.search('img src="(.+?)"', description)
-      description = ['By <a href="https://reddit.com/u/'+author+'">u/'+author+'</a>']
       pattern = '<!-- SC_OFF --><div.+?>(.+)</div><!-- SC_ON -->'
-      if selftext := re.search(pattern, description):
+      selftext = re.search(pattern, description)
+      description = ['By <a href="https://reddit.com/u/'+author+'">u/'+author+'</a>']
+      if selftext:
         description.append(selftext.group(1))
       if img_src:
         description.append('<img src="' + img_src.group(1) + '">')
@@ -245,7 +246,7 @@ class Feed(object):
         'title': title,
         'link': 'https://redd.it/'+id,
         'guid': id,
-        'description': description,
+        'description': '<br><br>'.join(description),
         'pubdate': post['updated'],
       })
 
