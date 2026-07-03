@@ -216,7 +216,11 @@ class Feed(object):
       try:
         author = _AUTHOR_CACHE.pop(id)
       except KeyError:
-        author = re.findall('/user/([^"]+)', description)[-1]
+        author = re.findall('/user/([^"]+)', description)
+        if len(author) > 0:
+          author = author[-1]
+        else:
+          author = '???'
 
       img_src = re.search('img src="(.+?)"', description)
       pattern = '<!-- SC_OFF --><div.+?>(.+)</div><!-- SC_ON -->'
